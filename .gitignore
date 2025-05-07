@@ -117,3 +117,5 @@ mjkey.txt
 
 MUJOCO_LOG.TXT
 datasets
+
+*.ply

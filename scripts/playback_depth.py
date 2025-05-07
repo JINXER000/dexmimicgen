@@ -37,6 +37,9 @@ Example usage:
     # debug the dataset playback with verbose logging and first frame only
     python script.py --dataset /path/to/dataset.hdf5 --verbose --first
 """
+import sys
+robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
+sys.path.append(robosuite_path)
 
 import argparse
 import datetime
@@ -49,6 +52,7 @@ import h5py
 import imageio
 import numpy as np
 import robosuite
+from robosuite.demos.vis_depth_seg import get_individual_pcd, get_name2id
 from termcolor import colored
 
 # IMPORTANT: you need to import the package to register the environments
@@ -66,6 +70,7 @@ def playback_trajectory_with_env(
     camera_names=None,
     first=False,
     verbose=False,
+    pc_fn = None,
 ):
     """
     Helper function to playback a single trajectory using the simulator environment.
@@ -83,6 +88,7 @@ def playback_trajectory_with_env(
         camera_names (list): determines which camera(s) are used for rendering. Pass more than
             one to output a video with multiple camera views concatenated horizontally.
         first (bool): if True, only use the first frame of each episode.
+        pc_fn: if None, it will get the object pc
     """
     write_video = video_writer is not None
     video_count = 0
@@ -110,12 +116,13 @@ def playback_trajectory_with_env(
     if render is False:
         print(colored("Running episode...", "yellow"))
 
+    pc_dict_list = []
     success = False
     for i in range(traj_len):
         start = time.time()
 
         if action_playback:
-            env.step(actions[i])
+            obs = env.step(actions[i])
             if env._check_success():
                 success = True
             if i < traj_len - 1:
@@ -133,7 +140,12 @@ def playback_trajectory_with_env(
                             )
                         )
         else:
-            reset_to(env, {"states": states[i]})
+            obs = reset_to(env, {"states": states[i]})
+
+            ## get the obj pc in the current frame
+            if pc_fn is not None:
+                obj_pc_dict = pc_fn(env, obs)
+                pc_dict_list.append(obj_pc_dict)
 
         # on-screen render
         if render:
@@ -151,22 +163,26 @@ def playback_trajectory_with_env(
 
         # video render
         if write_video:
-            if video_count % video_skip == 0:
-                video_img = []
-                for cam_name in camera_names:
-                    im = env.sim.render(height=512, width=512, camera_name=cam_name)[
-                        ::-1
-                    ]
-                    video_img.append(im)
-                video_img = np.concatenate(
-                    video_img, axis=1
-                )  # concatenate horizontally
-                video_writer.append_data(video_img)
+            frontview_img = obs['frontview_image']
+            video_writer.append_data(frontview_img)
+            # if video_count % video_skip == 0:
+            #     video_img = []
+            #     for cam_name in camera_names:
+            #         im = env.sim.render(height=512, width=512, camera_name=cam_name)[
+            #             ::-1
+            #         ]
+            #         video_img.append(im)
+            #     video_img = np.concatenate(
+            #         video_img, axis=1
+            #     )  # concatenate horizontally
+            #     video_writer.append_data(video_img)
 
             video_count += 1
 
         if first:
             break
+
+    print('video length:', video_count)
 
     if render:
         env.viewer.close()
@@ -175,42 +191,44 @@ def playback_trajectory_with_env(
     if action_playback and not success:
         print(colored("warning: playback did not success", "red"))
 
+    return pc_dict_list
 
-def playback_trajectory_with_obs(
-    traj_grp,
-    video_writer,
-    video_skip=5,
-    image_names=None,
-    first=False,
-):
-    """
-    This function reads all "rgb" observations in the dataset trajectory and
-    writes them into a video.
 
-    Args:
-        traj_grp (hdf5 file group): hdf5 group which corresponds to the dataset trajectory to playback
-        video_writer (imageio writer): video writer
-        video_skip (int): determines rate at which environment frames are written to video
-        image_names (list): determines which image observations are used for rendering. Pass more than
-            one to output a video with multiple image observations concatenated horizontally.
-        first (bool): if True, only use the first frame of each episode.
-    """
-    assert (
-        image_names is not None
-    ), "error: must specify at least one image observation to use in @image_names"
-    video_count = 0
+# def playback_trajectory_with_obs(
+#     traj_grp,
+#     video_writer,
+#     video_skip=5,
+#     image_names=None,
+#     first=False,
+# ):
+#     """
+#     This function reads all "rgb" observations in the dataset trajectory and
+#     writes them into a video.
 
-    traj_len = traj_grp["obs/{}".format(image_names[0] + "_image")].shape[0]
-    for i in range(traj_len):
-        if video_count % video_skip == 0:
-            # concatenate image obs together
-            im = [traj_grp["obs/{}".format(k + "_image")][i] for k in image_names]
-            frame = np.concatenate(im, axis=1)
-            video_writer.append_data(frame)
-        video_count += 1
+#     Args:
+#         traj_grp (hdf5 file group): hdf5 group which corresponds to the dataset trajectory to playback
+#         video_writer (imageio writer): video writer
+#         video_skip (int): determines rate at which environment frames are written to video
+#         image_names (list): determines which image observations are used for rendering. Pass more than
+#             one to output a video with multiple image observations concatenated horizontally.
+#         first (bool): if True, only use the first frame of each episode.
+#     """
+#     assert (
+#         image_names is not None
+#     ), "error: must specify at least one image observation to use in @image_names"
+#     video_count = 0
 
-        if first:
-            break
+#     traj_len = traj_grp["obs/{}".format(image_names[0] + "_image")].shape[0]
+#     for i in range(traj_len):
+#         if video_count % video_skip == 0:
+#             # concatenate image obs together
+#             im = [traj_grp["obs/{}".format(k + "_image")][i] for k in image_names]
+#             frame = np.concatenate(im, axis=1)
+#             video_writer.append_data(frame)
+#         video_count += 1
+
+#         if first:
+#             break
 
 
 def get_env_metadata_from_dataset(dataset_path, ds_format="robomimic"):
@@ -257,7 +275,7 @@ class ObservationKeyToModalityDict(dict):
         return super(ObservationKeyToModalityDict, self).__getitem__(item)
 
 
-def reset_to(env, state):
+def reset_to(env, state,should_ret=False):
     """
     Reset to a specific simulator state.
 
@@ -270,7 +288,7 @@ def reset_to(env, state):
         observation (dict): observation dictionary after setting the simulator state (only
             if "states" is in @state)
     """
-    should_ret = False
+    # should_ret = False
     if "model" in state:
         if state.get("ep_meta", None) is not None:
             # set relevant episode information
@@ -312,9 +330,10 @@ def reset_to(env, state):
         # later versions renamed this to update_state
         env.update_state()
 
-    # if should_ret:
-    #     # only return obs if we've done a forward call - otherwise the observations will be garbage
-    #     return get_observation()
+    ## NOTE : below will make the iteration very slow. Also, the videowriter is incorrect as well. 
+    if should_ret:
+        # only return obs if we've done a forward call - otherwise the observations will be garbage
+        return env._get_observations(force_update = True)
     return None
 
 
@@ -347,6 +366,8 @@ def playback_dataset(args):
 
     # create environment only if not playing back with observations
     if not args.use_obs:
+        cam_names = ["agentview", "birdview", "frontview"]
+        W = H = 128 # 512
 
         env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
 
@@ -354,8 +375,13 @@ def playback_dataset(args):
         env_kwargs["env_name"] = env_meta["env_name"]
         env_kwargs["has_renderer"] = False
         env_kwargs["renderer"] = "mjviewer"
-        env_kwargs["has_offscreen_renderer"] = write_video
-        env_kwargs["use_camera_obs"] = False
+        env_kwargs["has_offscreen_renderer"] = True
+        env_kwargs["use_camera_obs"] = True
+        env_kwargs["camera_depths"] = True
+        env_kwargs["camera_segmentations"] = "instance"
+        env_kwargs["camera_names"] = cam_names
+        env_kwargs["camera_heights"] = H
+        env_kwargs["camera_widths"] = W
 
         if args.verbose:
             print(
@@ -390,29 +416,36 @@ def playback_dataset(args):
     inds = np.argsort([int(elem[5:]) for elem in demos])
     demos = [demos[i] for i in inds]
 
-    # maybe reduce the number of demonstrations to playback
+    # randomize the playback
     if args.n is not None:
-        random.shuffle(demos)
+        # random.shuffle(demos)
         demos = demos[: args.n]
 
-    # maybe dump video
-    video_writer = None
-    if write_video:
-        video_writer = imageio.get_writer(args.video_path, fps=20)
+
 
     for ind in range(len(demos)):
         ep = demos[ind]
         print(colored("\nPlaying back episode: {}".format(ep), "yellow"))
 
-        if args.use_obs:
-            playback_trajectory_with_obs(
-                traj_grp=f["data/{}".format(ep)],
-                video_writer=video_writer,
-                video_skip=args.video_skip,
-                image_names=args.render_image_names,
-                first=args.first,
-            )
+        new_hdf5_path = args.dataset.split(".hdf5")[0] + f"_{ep}_pcd.hdf5"
+        if os.path.exists(new_hdf5_path):
+            print(colored(f"Skipping episode {ep} as {new_hdf5_path} already exists", "red"))
             continue
+        # if args.use_obs:
+        #     playback_trajectory_with_obs(
+        #         traj_grp=f["data/{}".format(ep)],
+        #         video_writer=video_writer,
+        #         video_skip=args.video_skip,
+        #         image_names=args.render_image_names,
+        #         first=args.first,
+        #     )
+        #     continue
+
+        # maybe dump video
+        video_path = args.dataset.split(".hdf5")[0] + f"_{ep}.mp4"
+        video_writer = None
+        if write_video:
+            video_writer = imageio.get_writer(video_path, fps=20)
 
         # prepare initial state to reload from
         states = f["data/{}/states".format(ep)][()]
@@ -430,7 +463,14 @@ def playback_dataset(args):
         if args.use_actions:
             actions = f["data/{}/actions".format(ep)][()]
 
-        playback_trajectory_with_env(
+        ## get the point cloud for the first frame
+        if 'lift_try' in args.dataset:
+            interested_objs = ['pot', 'obj0', 'obj1']
+        elif 'assembly' in args.dataset:
+            interested_objs = ['base', 'piece_1', 'piece_2']
+        pc_fn = get_pcd_dict_fn(cam_names, W, H,  interested_objs, record_ply=False)
+
+        pc_dict_list= playback_trajectory_with_env(
             env=env,
             initial_state=initial_state,
             states=states,
@@ -441,15 +481,95 @@ def playback_dataset(args):
             camera_names=args.render_image_names,
             first=args.first,
             verbose=args.verbose,
+            pc_fn = pc_fn,
         )
 
+
+
+        def animate_pts():
+            import open3d as o3d
+            ## https://chat.deepseek.com/a/chat/s/99bab2d6-7547-4eb9-a5d1-d7667844211b
+            pcd = o3d.geometry.PointCloud()
+            for obj_name in pc_dict_list[0].keys():
+                pcd += pc_dict_list[0][obj_name]
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(window_name='all', width=800, height=600)
+            vis.add_geometry(pcd)
+
+            # 设置相机轨迹参数
+            ctr = vis.get_view_control()
+            ctr.set_zoom(2)
+
+            num_frames = len(pc_dict_list)
+            for i in range(num_frames):
+                pcd = o3d.geometry.PointCloud()
+                for obj_name in pc_dict_list[i].keys():
+                    pcd += pc_dict_list[i][obj_name]
+                vis.update_geometry(pcd)
+                vis.poll_events()
+                vis.update_renderer()
+                # cv2.waitKey(1)
+            vis.destroy_window()
+
+        # piece1_x = [np.array(pc_dict_list[i]['piece_1'].points).mean(axis=0)[0] for i in range(len(pc_dict_list))]
+        # from matplotlib import pyplot as plt
+        # plt.plot(piece1_x)
+        # plt.savefig('piece1_x.png')
+        # animate_pts()
+
+
+        ## copy the demo to a new hdf5 file
+        with h5py.File(new_hdf5_path, 'w') as dst:
+            data_group = dst.create_group('data')
+            # copy the /data{} group
+            f.copy(f"data/{ep}/", data_group)
+
+            # add the initial point cloud to the new hdf5 file
+            pc_group = data_group.create_group('obj_pcd')
+            for obj_name in interested_objs:
+                obj_pc_list = [pc_dict_list[i][obj_name] for i in range(len(pc_dict_list))]
+                # min_pc_size = min([len(obj_pc) for obj_pc in obj_pc_list])
+                # pc_group.create_dataset(obj_name, data=np.asarray(obj_pc_list))
+                pc_group.create_dataset(obj_name+ '_points', (len(obj_pc_list),), dtype=h5py.vlen_dtype('float32'))
+                for i in range(len(obj_pc_list)):
+                    pc_group[obj_name+ '_points' ][i] = np.asarray(obj_pc_list[i].points, dtype=np.float32).flatten()
+                # pc_group.create_dataset(obj_name+ '_colors', (len(obj_pc_list),), dtype=h5py.vlen_dtype('float32'))
+                # for i in range(len(obj_pc_list)):
+                #     pc_group[obj_name+'_colors'][i] = np.asarray(obj_pc_list[i].colors, dtype=np.float32).flatten()
+        print(colored(f"Saved initial point clouds to {new_hdf5_path}", "green"))
+
+        if write_video:
+            print(colored(f"Saved video to {video_path}", "green"))
+            video_writer.close()
     f.close()
-    if write_video:
-        print(colored(f"Saved video to {args.video_path}", "green"))
-        video_writer.close()
+
 
     if env is not None:
         env.close()
+
+def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
+    def get_pcd(env, obs):
+        init_pc_dict = {inst:None for inst in interested_objs}
+        name2id = get_name2id(env)
+        # print('name_keys:', name2id.keys())
+        # obs = env.reset()
+        import open3d as o3d
+        for obj_name in interested_objs:
+            obj_pcd = o3d.geometry.PointCloud()
+            for cam in cam_names:
+                pcd = get_individual_pcd(cam, obs, W, H, \
+                    seg_id=name2id[obj_name],  visualize=False, env=env, filter = True)
+                obj_pcd += pcd
+            init_pc_dict[obj_name] = obj_pcd
+
+            # ensure the pcd is not empty
+            if len(obj_pcd.points) == 0:
+                raise ValueError(f"Point cloud for {obj_name} is empty")
+
+            if record_ply:
+                o3d.io.write_point_cloud(f"{obj_name}_pcd.ply", obj_pcd)
+        return init_pc_dict
+    return get_pcd
 
 
 if __name__ == "__main__":
@@ -458,9 +578,9 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         help="path to hdf5 dataset",
-    default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
-
-    )
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_lift_tray.hdf5",
+        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
+    )   
     parser.add_argument(
         "--filter_key",
         type=str,
@@ -472,7 +592,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=None,
+        default=50,
         help="(optional) stop after n trajectories are played",
     )
 
