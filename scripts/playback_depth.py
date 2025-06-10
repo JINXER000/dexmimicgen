@@ -54,6 +54,7 @@ import numpy as np
 import robosuite
 from robosuite.demos.vis_depth_seg import get_individual_pcd, get_name2id
 from termcolor import colored
+from scipy.spatial.transform import Rotation
 
 # IMPORTANT: you need to import the package to register the environments
 import dexmimicgen
@@ -71,6 +72,7 @@ def playback_trajectory_with_env(
     first=False,
     verbose=False,
     pc_fn = None,
+    assumed_eef_pos = None,
 ):
     """
     Helper function to playback a single trajectory using the simulator environment.
@@ -88,7 +90,7 @@ def playback_trajectory_with_env(
         camera_names (list): determines which camera(s) are used for rendering. Pass more than
             one to output a video with multiple camera views concatenated horizontally.
         first (bool): if True, only use the first frame of each episode.
-        pc_fn: if None, it will get the object pc
+        pc_fn: it will get the object pc
     """
     write_video = video_writer is not None
     video_count = 0
@@ -109,9 +111,19 @@ def playback_trajectory_with_env(
     reset_to(env, initial_state)
 
     traj_len = states.shape[0]
-    action_playback = actions is not None
-    if action_playback:
-        assert states.shape[0] == actions.shape[0]
+    # action_playback = actions is not None
+    # if action_playback:
+    #     assert states.shape[0] == actions.shape[0]
+    if actions is not None:
+        stacked_actions = actions.reshape(*actions.shape[:-1],-1,7)
+        # generate abs actions
+        action_goal_pos = np.zeros(
+            stacked_actions.shape[:-1]+(3,), 
+            dtype=stacked_actions.dtype)
+        action_goal_ori = np.zeros(
+            stacked_actions.shape[:-1]+(3,), 
+            dtype=stacked_actions.dtype)
+        action_gripper = stacked_actions[...,[-1]]
 
     if render is False:
         print(colored("Running episode...", "yellow"))
@@ -121,31 +133,26 @@ def playback_trajectory_with_env(
     for i in range(traj_len):
         start = time.time()
 
-        if action_playback:
-            obs = env.step(actions[i])
-            if env._check_success():
-                success = True
-            if i < traj_len - 1:
-                # check whether the actions deterministically lead to the same recorded states
-                state_playback = np.array(env.sim.get_state().flatten())
-                if not np.all(np.equal(states[i + 1], state_playback)):
-                    err = np.linalg.norm(states[i + 1] - state_playback)
-                    if verbose or i == traj_len - 2:
-                        print(
-                            colored(
-                                "warning: playback diverged by {} at step {}".format(
-                                    err, i
-                                ),
-                                "yellow",
-                            )
-                        )
-        else:
-            obs = reset_to(env, {"states": states[i]})
+        obs = reset_to(env, {"states": states[i]})
 
-            ## get the obj pc in the current frame
-            if pc_fn is not None:
-                obj_pc_dict = pc_fn(env, obs)
-                pc_dict_list.append(obj_pc_dict)
+        ## get the obj pc in the current frame
+        if pc_fn is not None:
+            obj_pc_dict = pc_fn(env, obs)
+            pc_dict_list.append(obj_pc_dict)
+
+        if actions is not None:
+            # taken from robot_env.py L#454
+            for idx, robot in enumerate(env.robots):
+                # run controller goal generator
+                robot.control(stacked_actions[i,idx], policy_step=True)
+            
+                # read pos and ori from robots
+                side = robot.arms[0]
+                controller = robot.part_controllers[side]
+                action_goal_pos[i,idx] = controller.goal_pos
+                action_goal_ori[i,idx] = Rotation.from_matrix(
+                    controller.goal_ori).as_rotvec()
+
 
         # on-screen render
         if render:
@@ -188,10 +195,20 @@ def playback_trajectory_with_env(
         env.viewer.close()
         env.viewer = None
 
-    if action_playback and not success:
-        print(colored("warning: playback did not success", "red"))
+    # if action_playback and not success:
+    #     print(colored("warning: playback did not success", "red"))
+    
+    if actions is not None:
+        stacked_abs_actions = np.concatenate([
+            action_goal_pos,
+            action_goal_ori,
+            action_gripper
+        ], axis=-1)
+        abs_actions = stacked_abs_actions.reshape(actions.shape)
+    else:
+        abs_actions = None
 
-    return pc_dict_list
+    return pc_dict_list, abs_actions
 
 
 # def playback_trajectory_with_obs(
@@ -367,7 +384,7 @@ def playback_dataset(args):
     # create environment only if not playing back with observations
     if not args.use_obs:
         cam_names = ["agentview", "birdview", "frontview"]
-        W = H = 128 # 512
+        W = H =  512# 128
 
         env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
 
@@ -382,6 +399,7 @@ def playback_dataset(args):
         env_kwargs["camera_names"] = cam_names
         env_kwargs["camera_heights"] = H
         env_kwargs["camera_widths"] = W
+        env_kwargs["controller_configs"] = env_meta["env_kwargs"]['controller_configs']
 
         if args.verbose:
             print(
@@ -400,6 +418,8 @@ def playback_dataset(args):
                 )
             )
         env = robosuite.make(**env_kwargs)
+
+    get_gt_link_state(env,  interested_objs = ['table', 'pot_root', 'robot0_base'])
 
     f = h5py.File(args.dataset, "r")
 
@@ -455,6 +475,8 @@ def playback_dataset(args):
             initial_state["model"] = env.sim.model.get_xml()
         initial_state["ep_meta"] = f["data/{}".format(ep)].attrs.get("ep_meta", None)
 
+        assumed_eef_pos = f["data/{}/datagen_info/target_pose".format(ep)][()]
+
         if args.extend_states:
             states = np.concatenate((states, [states[-1]] * 50))
 
@@ -464,13 +486,17 @@ def playback_dataset(args):
             actions = f["data/{}/actions".format(ep)][()]
 
         ## get the point cloud for the first frame
-        if 'lift_try' in args.dataset:
+        if 'lift_tray' in args.dataset:
             interested_objs = ['pot', 'obj0', 'obj1']
         elif 'assembly' in args.dataset:
             interested_objs = ['base', 'piece_1', 'piece_2']
-        pc_fn = get_pcd_dict_fn(cam_names, W, H,  interested_objs, record_ply=False)
+        elif 'transport' in args.dataset:
+            interested_objs = ['trash', 'payload', 'transport_start_bin', 'transport_start_bin_lid', 'transport_target_bin', 'transport_trash_bin']
+        elif 'threading' in args.dataset:
+            interested_objs = ['needle_obj', 'tripod_obj']
+        pc_fn = get_pcd_dict_fn(cam_names, W, H,  interested_objs, record_ply=True)
 
-        pc_dict_list= playback_trajectory_with_env(
+        pc_dict_list, abs_actions = playback_trajectory_with_env(
             env=env,
             initial_state=initial_state,
             states=states,
@@ -482,10 +508,20 @@ def playback_dataset(args):
             first=args.first,
             verbose=args.verbose,
             pc_fn = pc_fn,
+            assumed_eef_pos = assumed_eef_pos,
         )
 
+        if abs_actions is not None:
+            robot0_eef_pos = f["data/{}/obs/robot0_eef_pos".format(ep)][()]
+            robot0_eef_quat = f["data/{}/obs/robot0_eef_quat".format(ep)][()]
+            delta_error_info = evaluate_rollout_error(
+                env, states, actions, robot0_eef_pos, robot0_eef_quat)
 
-
+            info = {
+                'delta_max_error': delta_error_info,
+            }
+            print('error info:', info)
+        
         def animate_pts():
             import open3d as o3d
             ## https://chat.deepseek.com/a/chat/s/99bab2d6-7547-4eb9-a5d1-d7667844211b
@@ -528,15 +564,17 @@ def playback_dataset(args):
             pc_group = data_group.create_group('obj_pcd')
             for obj_name in interested_objs:
                 obj_pc_list = [pc_dict_list[i][obj_name] for i in range(len(pc_dict_list))]
-                # min_pc_size = min([len(obj_pc) for obj_pc in obj_pc_list])
-                # pc_group.create_dataset(obj_name, data=np.asarray(obj_pc_list))
                 pc_group.create_dataset(obj_name+ '_points', (len(obj_pc_list),), dtype=h5py.vlen_dtype('float32'))
                 for i in range(len(obj_pc_list)):
                     pc_group[obj_name+ '_points' ][i] = np.asarray(obj_pc_list[i].points, dtype=np.float32).flatten()
                 # pc_group.create_dataset(obj_name+ '_colors', (len(obj_pc_list),), dtype=h5py.vlen_dtype('float32'))
                 # for i in range(len(obj_pc_list)):
                 #     pc_group[obj_name+'_colors'][i] = np.asarray(obj_pc_list[i].colors, dtype=np.float32).flatten()
-        print(colored(f"Saved initial point clouds to {new_hdf5_path}", "green"))
+                    
+            # add abs action
+            if abs_actions is not None:
+                data_group.create_dataset("abs_actions", data=abs_actions)
+        print(colored(f"Saved processed demo {ind} to {new_hdf5_path}", "green"))
 
         if write_video:
             print(colored(f"Saved video to {video_path}", "green"))
@@ -549,7 +587,7 @@ def playback_dataset(args):
 
 def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
     def get_pcd(env, obs):
-        init_pc_dict = {inst:None for inst in interested_objs}
+        pc_dict = {inst:None for inst in interested_objs}
         name2id = get_name2id(env)
         # print('name_keys:', name2id.keys())
         # obs = env.reset()
@@ -560,7 +598,7 @@ def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
                 pcd = get_individual_pcd(cam, obs, W, H, \
                     seg_id=name2id[obj_name],  visualize=False, env=env, filter = True)
                 obj_pcd += pcd
-            init_pc_dict[obj_name] = obj_pcd
+            pc_dict[obj_name] = obj_pcd
 
             # ensure the pcd is not empty
             if len(obj_pcd.points) == 0:
@@ -568,8 +606,66 @@ def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
 
             if record_ply:
                 o3d.io.write_point_cloud(f"{obj_name}_pcd.ply", obj_pcd)
-        return init_pc_dict
+        return pc_dict
     return get_pcd
+
+    
+def evaluate_rollout_error(env, 
+        states, actions, 
+        robot0_eef_pos, 
+        robot0_eef_quat, 
+        metric_skip_steps=1):
+    # first step have high error for some reason, not representative
+
+    # evaluate abs actions
+    rollout_next_states = list()
+    rollout_next_eef_pos = list()
+    rollout_next_eef_quat = list()
+    obs = reset_to(env, {'states': states[0]})
+    for i in range(len(states)):
+        obs = reset_to(env, {'states': states[i]})
+        obs, reward, done, info = env.step(actions[i])
+        obs = env._get_observations()
+        rollout_next_states.append(env.get_state()['states'])
+        rollout_next_eef_pos.append(obs['robot0_eef_pos'])
+        rollout_next_eef_quat.append(obs['robot0_eef_quat'])
+    rollout_next_states = np.array(rollout_next_states)
+    rollout_next_eef_pos = np.array(rollout_next_eef_pos)
+    rollout_next_eef_quat = np.array(rollout_next_eef_quat)
+
+    next_state_diff = states[1:] - rollout_next_states[:-1]
+    max_next_state_diff = np.max(np.abs(next_state_diff[metric_skip_steps:]))
+
+    next_eef_pos_diff = robot0_eef_pos[1:] - rollout_next_eef_pos[:-1]
+    next_eef_pos_dist = np.linalg.norm(next_eef_pos_diff, axis=-1)
+    max_next_eef_pos_dist = next_eef_pos_dist[metric_skip_steps:].max()
+
+    next_eef_rot_diff = Rotation.from_quat(robot0_eef_quat[1:]) \
+        * Rotation.from_quat(rollout_next_eef_quat[:-1]).inv()
+    next_eef_rot_dist = next_eef_rot_diff.magnitude()
+    max_next_eef_rot_dist = next_eef_rot_dist[metric_skip_steps:].max()
+
+    info = {
+        'state': max_next_state_diff,
+        'pos': max_next_eef_pos_dist,
+        'rot': max_next_eef_rot_dist
+    }
+    return info
+
+def get_gt_link_state(env, interested_objs = ['table', 'cube1']):
+    model = env.sim.model._model
+    data = env.sim.data._data
+
+    import mujoco
+    for i in range(model.nbody):
+        body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
+        if body_name:
+            print(f"Body {i}: {body_name}")
+            if body_name in interested_objs:
+                print(f'position of {body_name}:', data.xpos[i])
+
+        else:
+            print(f"Body {i}: (unnamed)")
 
 
 if __name__ == "__main__":
@@ -579,7 +675,8 @@ if __name__ == "__main__":
         type=str,
         help="path to hdf5 dataset",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_lift_tray.hdf5",
-        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
+        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_threading.hdf5",
     )   
     parser.add_argument(
         "--filter_key",
@@ -592,7 +689,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=50,
+        default=1,
         help="(optional) stop after n trajectories are played",
     )
 
