@@ -12,6 +12,7 @@ from scripts.playback_depth import get_pcd_dict_fn, reset_to
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.utils.input_utils import *
+from robosuite.utils.ik_utils import IKSolver
 
 import h5py
 import networkx as nx
@@ -63,7 +64,7 @@ def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
 class DMG_env_runner:
     def __init__(self, task_name, env_configuration = "parallel", robots = ["Panda", "Panda"], \
                  cam_names = ["agentview", "birdview", "frontview"],\
-                  W = 128, H = 128):
+                  W = 128, H = 128, controller_name = "OSC_POSE", abs_action = False):
         
         self.evaluate_fn = None
         self.inference_fn = None
@@ -85,17 +86,21 @@ class DMG_env_runner:
         self.options["camera_depths"] = True
         self.options["camera_segmentations"] = "instance"
 
-        self.controller_name = "OSC_POSE"  # default controller
-        arm_controller_config = suite.load_part_controller_config(default_controller=self.controller_name)
 
         # Load the abs joint position controller 
         # controller_json_path = '/home/user/yzchen_ws/imitation_learning/robosuite/robosuite/controllers/config/default/parts/joint_position_absolute.json'
         # arm_controller_config = suite.load_part_controller_config(custom_fpath=controller_json_path)
 
+        self.controller_name = controller_name # default controller
+        self.abs_action = abs_action
+        arm_controller_config = suite.load_part_controller_config(default_controller=self.controller_name)
+
         robot = self.options["robots"][0] if isinstance(self.options["robots"], list) else self.options["robots"]
         self.options["controller_configs"] = refactor_composite_controller_config(
             arm_controller_config, robot, ["right", "left"]
         )
+        if abs_action:
+            self.options["controller_configs"]["control_delta"] = False
 
         # initialize the task
         self.env = suite.make(
@@ -153,7 +158,7 @@ class DMG_env_runner:
         equibot_obs['eef_pos'] = eef_state_13d
         return equibot_obs
     
-    def organize_equibot_action(self, action):
+    def organize_equipolicy_action(self, action):
         related_robots = self.equi_cfg.data.dataset.related_robots
         num_eef = len(related_robots)
 
@@ -207,7 +212,7 @@ class DMG_env_runner:
 
                     agent_ac = ac[ac_ix] if len(ac.shape) > 1 else ac # 20
 
-                    total_action = self.organize_equibot_action(agent_ac)
+                    total_action = self.organize_equipolicy_action(agent_ac)
                     raw_obs, curr_reward, done, info = self.env.step(total_action)
 
                     self.env.render()
@@ -278,7 +283,6 @@ class DMG_env_runner:
 
         self.obs, reward, done, info = self.env.step(total_action)
         self.env.render()
-
         # limit frame rate if necessary
         elapsed = time.time() - start
         diff = 1 / MAX_FR - elapsed
@@ -295,8 +299,6 @@ class DMG_env_runner:
 
         pc_dict = {}
         if self.task_name == 'two_arm_three_piece_assembly':
-            # cam_names = ["agentview", "birdview", "frontview"]
-            # W = H = 128 # 512     
             interested_objs = ['base', 'piece_1', 'piece_2']
 
         else:
