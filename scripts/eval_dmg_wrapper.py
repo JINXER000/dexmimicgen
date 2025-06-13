@@ -20,6 +20,7 @@ import os
 import json
 import numpy as np
 from scipy.spatial.transform import Rotation
+import copy
 
 MAX_FR = 25  # max frame rate for running simluation
 
@@ -91,16 +92,20 @@ class DMG_env_runner:
         # controller_json_path = '/home/user/yzchen_ws/imitation_learning/robosuite/robosuite/controllers/config/default/parts/joint_position_absolute.json'
         # arm_controller_config = suite.load_part_controller_config(custom_fpath=controller_json_path)
 
-        self.controller_name = controller_name # default controller
-        self.abs_action = abs_action
-        arm_controller_config = suite.load_part_controller_config(default_controller=self.controller_name)
+        # self.controller_name = controller_name # default controller
+        # self.abs_action = abs_action
+        # arm_controller_config = suite.load_part_controller_config(default_controller=self.controller_name)
 
-        robot = self.options["robots"][0] if isinstance(self.options["robots"], list) else self.options["robots"]
-        self.options["controller_configs"] = refactor_composite_controller_config(
-            arm_controller_config, robot, ["right", "left"]
-        )
-        if abs_action:
-            self.options["controller_configs"]["control_delta"] = False
+        # robot = self.options["robots"][0] if isinstance(self.options["robots"], list) else self.options["robots"]
+        # self.options["controller_configs"] = refactor_composite_controller_config(
+        #     arm_controller_config, robot, ["right", "left"]
+        # )
+        # if abs_action:
+        #     self.options["controller_configs"]["control_delta"] = False
+
+        default_controller_configs = self.init_controller_configs(controller_name, abs_action)
+        self.options["controller_configs"] = default_controller_configs
+        self.controller_configs = default_controller_configs
 
         # initialize the task
         self.env = suite.make(
@@ -111,6 +116,101 @@ class DMG_env_runner:
         )
         self.obs = self.env.reset()
         self.env.viewer.set_camera(camera_id=0)
+
+
+
+    def init_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
+        # config the abs joint position controller 
+        controller_json_path = '/home/user/yzchen_ws/imitation_learning/robosuite/robosuite/controllers/config/default/parts/joint_position_absolute.json'
+        self.abs_joint_controller_config = suite.load_part_controller_config(custom_fpath=controller_json_path)
+
+        # config the OSC_POSE controller, input_type is delta by default
+        self.relative_osc_pose_controller_config = suite.load_part_controller_config(
+            default_controller="OSC_POSE"
+        )
+
+        # config the abs OSC_POSE controller
+        self.absolute_osc_pose_controller_config = suite.load_part_controller_config(
+            default_controller="OSC_POSE"
+        )
+        self.absolute_osc_pose_controller_config["input_type"] = "absolute"  # use absolute actions
+
+        default_controller_configs = self.update_controller_configs(
+            controller_name=controller_name, abs_action=abs_action
+        )
+        return default_controller_configs
+
+
+    def update_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
+        """Update the robot's controller configuration.
+        
+        Args:
+            controller_name (str): Name of the controller type to use (e.g. "OSC_POSE", "OSC_POSITION", etc.)
+            abs_action (bool): If True, use absolute actions for OSC_POSE controller. If False, use delta actions.
+        """
+        self.controller_name = controller_name
+        self.abs_action = abs_action
+
+        # Load the base controller config for the specified controller type
+        if controller_name == "OSC_POSE":
+            if abs_action:
+                arm_controller_config = self.absolute_osc_pose_controller_config
+            else:
+                arm_controller_config = self.relative_osc_pose_controller_config
+        elif controller_name == "JOINT_POSITION":
+            arm_controller_config = self.abs_joint_controller_config
+        else:
+            raise ValueError(f"Unsupported controller name: {controller_name}")
+        
+        robot = self.options["robots"][0] if isinstance(self.options["robots"], list) else self.options["robots"]
+
+        # Convert to composite controller config format
+        updated_controller_configs = refactor_composite_controller_config(
+            arm_controller_config, 
+            robot, 
+            ["right", "left"]
+        )
+        updated_controller_configs["type"] = "SWITCHABLE"
+
+        return updated_controller_configs
+    
+    def update_controllers(self, controller_name="OSC_POSE", abs_action=False):
+
+        self.controller_configs = self.update_controller_configs(
+            controller_name=controller_name, abs_action=abs_action
+        )
+        ## do partial reset following _reset_internal()
+        # self.env._action_dim = 0
+        for robot in self.env.robots:
+            # Get the switchable controller instance
+            controller = robot.composite_controller
+            
+            # Create a unique name for this configuration
+            config_name = f"{controller_name}_{'abs' if abs_action else 'delta'}"
+            
+            # Add or update the configuration
+            controller.add_configuration(
+                name=config_name,
+                part_controller_config=self.controller_configs["body_parts"],
+                composite_controller_specific_config=self.controller_configs
+            )
+            
+            # Switch to the new configuration
+            controller.switch_configuration(config_name)
+
+
+        # # Reset robot and update action space dimension along the way
+        #     robot.composite_controller_config = self.controller_configs
+        #     robot.part_controller_config = copy.deepcopy(robot.composite_controller_config.get("body_parts", {}))
+        #     robot._load_controller()
+        #     self.env._action_dim += robot.action_dim
+        
+        self.env.reset_controller(self.controller_configs)
+        # Log the change
+        print(
+            f"Switched to {controller_name} controller with {'absolute' if abs_action else 'delta'} actions"
+        )
+
 
     def organize_equibot_obs(self, obs):
         equibot_obs = dict()
@@ -324,12 +424,13 @@ class DMG_env_runner:
         return pc_dict
 
 
-    def test_controller(self):
-        joint_dim = 7
+    def test_controller(self, controller_name="OSC_POSE", abs_action=False):
 
-        # Choose controller
-        # controller_name = choose_controller(part_controllers=True)
-    
+        self.update_controllers(
+            controller_name=controller_name, 
+            abs_action=False
+        )
+        joint_dim = 7    
         # Define the pre-defined controller actions to use (action_dim, num_test_steps, test_value)
         controller_settings = {
             "OSC_POSE": [6, 6, 0.1],
@@ -356,7 +457,7 @@ class DMG_env_runner:
         gripper_dim = 0
         for robot in self.env.robots:
             gripper_dim = robot.gripper["right"].dof
-            n += int(robot.action_dim / (action_dim + gripper_dim))
+            n += int(robot.action_dim / (action_dim + gripper_dim))  # OSC: 7, 6, 1 ; JOINT: 8, 7, 1
 
         neutral = np.zeros(action_dim + gripper_dim)
         
@@ -393,5 +494,5 @@ class DMG_env_runner:
 
 if __name__ == "__main__":
 
-    dmg_wrapper = DMG_env_runner("two_arm_three_piece_assembly")
-    dmg_wrapper.test_controller()
+    dmg_wrapper = DMG_env_runner("two_arm_three_piece_assembly", controller_name = "JOINT_POSITION", abs_action = True)
+    dmg_wrapper.test_controller(controller_name="OSC_POSE", abs_action=False)
