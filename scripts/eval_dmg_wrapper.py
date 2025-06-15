@@ -1,18 +1,20 @@
 import time
 from typing import Dict
-import sys
+# import sys
 # robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
 # dexmimicgen_path = "/home/user/yzchen_ws/imitation_learning/dexmimicgen/"
 # sys.path.append(robosuite_path)  # add robosuite root to path
 # sys.path.append(dexmimicgen_path)  # add dexmimicgen root to path
+# import dexmimicgen
 
-import dexmimicgen
+
 from scripts.playback_depth import get_pcd_dict_fn, reset_to
 
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.utils.input_utils import *
 from robosuite.utils.ik_utils import IKSolver
+import robomimic.utils.obs_utils as ObsUtils
 
 import h5py
 import networkx as nx
@@ -20,7 +22,9 @@ import os
 import json
 import numpy as np
 from scipy.spatial.transform import Rotation
-import copy
+from collections import namedtuple
+
+ts_tuple = namedtuple("ts_tuple", ["observation", "reward", "done", "info"])
 
 MAX_FR = 25  # max frame rate for running simluation
 
@@ -62,10 +66,11 @@ def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
     return rot_mat
 
 
-class DMG_env_runner:
+class DMG_env_switchable:
     def __init__(self, task_name, env_configuration = "parallel", robots = ["Panda", "Panda"], \
                  cam_names = ["agentview", "birdview", "frontview"],\
-                  W = 128, H = 128, controller_name = "OSC_POSE", abs_action = False):
+                  W = 128, H = 128, controller_name = "OSC_POSE", abs_action = False,
+                  postprocess_visual_obs = True):
         
         self.evaluate_fn = None
         self.inference_fn = None
@@ -74,6 +79,12 @@ class DMG_env_runner:
 
         self.task_name = task_name
         env_name = to_camel_case(task_name)
+
+        # robosuite version check
+        self._is_v1 = (suite.__version__.split(".")[0] == "1")
+        if self._is_v1:
+            assert (int(suite.__version__.split(".")[1]) >= 2), "only support robosuite v0.3 and v1.2+"
+        self.postprocess_visual_obs = postprocess_visual_obs
 
         self.options = {}
         self.options["env_name"] = env_name
@@ -87,22 +98,6 @@ class DMG_env_runner:
         self.options["camera_depths"] = True
         self.options["camera_segmentations"] = "instance"
 
-
-        # Load the abs joint position controller 
-        # controller_json_path = '/home/user/yzchen_ws/imitation_learning/robosuite/robosuite/controllers/config/default/parts/joint_position_absolute.json'
-        # arm_controller_config = suite.load_part_controller_config(custom_fpath=controller_json_path)
-
-        # self.controller_name = controller_name # default controller
-        # self.abs_action = abs_action
-        # arm_controller_config = suite.load_part_controller_config(default_controller=self.controller_name)
-
-        # robot = self.options["robots"][0] if isinstance(self.options["robots"], list) else self.options["robots"]
-        # self.options["controller_configs"] = refactor_composite_controller_config(
-        #     arm_controller_config, robot, ["right", "left"]
-        # )
-        # if abs_action:
-        #     self.options["controller_configs"]["control_delta"] = False
-
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
         self.options["controller_configs"] = default_controller_configs
         self.controller_configs = default_controller_configs
@@ -114,10 +109,68 @@ class DMG_env_runner:
             ignore_done=True,
             control_freq=20,
         )
-        self.obs = self.env.reset()
+        self.reset()
         self.env.viewer.set_camera(camera_id=0)
 
+    def reset(self, with_planning = False):
+        if with_planning:
+            raise NotImplementedError("Planning is not implemented yet")
+        else:
+            raw_obs = self.env.reset()
+            self.obs = self.get_observation(raw_obs)
+            init_ts = ts_tuple(self.obs, 0, False, {})
+        return init_ts
+    
+    def step(self, action):
+        raw_obs, reward, done, info = self.env.step(action)
+        self.obs = self.get_observation(raw_obs)
+        return ts_tuple(self.obs, reward, done, info)
 
+    ## env_robosuite.
+    def get_observation(self, di = None):
+        if ObsUtils.OBS_KEYS_TO_MODALITIES is None:
+            return di
+        if di is None:
+            di = self.env._get_observations(force_update=True) if self._is_v1 else self.env._get_observation()
+        ret = {}
+        for k in di:
+            if (k in ObsUtils.OBS_KEYS_TO_MODALITIES) and ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb"):
+                ret[k] = di[k][::-1]
+                if self.postprocess_visual_obs:
+                    ret[k] = ObsUtils.process_obs(obs=ret[k], obs_key=k)
+            elif (k in ObsUtils.OBS_KEYS_TO_MODALITIES) and ObsUtils.key_is_obs_modality(key=k, obs_modality="depth"):
+                ret[k] = di[k][::-1]
+                if len(ret[k].shape) == 2:
+                    ret[k] = ret[k][..., None] # (H, W, 1)
+                assert len(ret[k].shape) == 3 
+                # scale entries in depth map to correspond to real distance.
+                ret[k] = self.get_real_depth_map(ret[k])
+                if self.postprocess_visual_obs:
+                    ret[k] = ObsUtils.process_obs(obs=ret[k], obs_key=k)
+            elif "object" in k:
+                ret[k] = np.array(di[k])
+
+        if self._is_v1:
+            for robot in self.env.robots:
+                # add all robot-arm-specific observations. Note the (k not in ret) check
+                # ensures that we don't accidentally add robot wrist images a second time
+                pf = robot.robot_model.naming_prefix
+                for k in di:
+                    if k.startswith(pf) and (k not in ret) and (not k.endswith("proprio-state")):
+                        ret[k] = np.array(di[k])
+
+            # add in all frame-centric observations if present
+            if hasattr(self.env, "_frame_centric_observable_names"):
+                for fc_k in self.env._frame_centric_observable_names:
+                    ret[fc_k] = np.array(di[fc_k])
+        else:
+            # minimal proprioception for older versions of robosuite
+            ret["proprio"] = np.array(di["robot-state"])
+            ret["eef_pos"] = np.array(di["eef_pos"])
+            ret["eef_quat"] = np.array(di["eef_quat"])
+            ret["gripper_qpos"] = np.array(di["gripper_qpos"])
+
+        return ret
 
     def init_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
         # config the abs joint position controller 
@@ -197,13 +250,6 @@ class DMG_env_runner:
             
             # Switch to the new configuration
             controller.switch_configuration(config_name)
-
-
-        # # Reset robot and update action space dimension along the way
-        #     robot.composite_controller_config = self.controller_configs
-        #     robot.part_controller_config = copy.deepcopy(robot.composite_controller_config.get("body_parts", {}))
-        #     robot._load_controller()
-        #     self.env._action_dim += robot.action_dim
         
         self.env.reset_controller(self.controller_configs)
         # Log the change
@@ -313,7 +359,10 @@ class DMG_env_runner:
                     agent_ac = ac[ac_ix] if len(ac.shape) > 1 else ac # 20
 
                     total_action = self.organize_equipolicy_action(agent_ac)
-                    raw_obs, curr_reward, done, info = self.env.step(total_action)
+                    ts = self.step(total_action)
+                    raw_obs = ts.observation
+                    curr_reward = ts.reward
+                    done = ts.done
 
                     self.env.render()
 
@@ -381,7 +430,7 @@ class DMG_env_runner:
     def replay_tamp_step(self, total_action):
         start = time.time()
 
-        self.obs, reward, done, info = self.env.step(total_action)
+        ts = self.step(total_action)
         self.env.render()
         # limit frame rate if necessary
         elapsed = time.time() - start
@@ -395,6 +444,7 @@ class DMG_env_runner:
         rbt1_jpose = cur_obs['robot1_joint_pos']
         return rbt0_jpose, rbt1_jpose
     
+    ## TODO: use self.get_observation() to obtain depth
     def save_mj_obsevation(self, npz_path = None, offset_dict = {}):
 
         pc_dict = {}
@@ -470,7 +520,7 @@ class DMG_env_runner:
 
                 action[count] = test_value
                 total_action = np.tile(action, n)
-                self.obs, reward, done, info = self.env.step(total_action)
+                ts = self.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -481,7 +531,7 @@ class DMG_env_runner:
             for i in range(steps_per_rest):
                 start = time.time()
                 total_action = np.tile(neutral, n)
-                self.obs, reward, done, info = self.env.step(total_action)
+                ts = self.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary

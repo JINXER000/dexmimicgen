@@ -2,9 +2,9 @@
 #
 # Licensed under the NVIDIA Source Code License [see LICENSE for details].
 
-import sys
-robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
-sys.path.append(robosuite_path)  # add robosuite root to path
+# import sys
+# robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
+# sys.path.append(robosuite_path)  # add robosuite root to path
 
 
 from dexmimicgen.environments.two_arm_box_cleanup import TwoArmBoxCleanup
