@@ -1,20 +1,14 @@
 import time
 from typing import Dict
-# import sys
-# robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
-# dexmimicgen_path = "/home/user/yzchen_ws/imitation_learning/dexmimicgen/"
-# sys.path.append(robosuite_path)  # add robosuite root to path
-# sys.path.append(dexmimicgen_path)  # add dexmimicgen root to path
-# import dexmimicgen
 
 
-from scripts.playback_depth import get_pcd_dict_fn, reset_to
+# from scripts.playback_depth import get_pcd_dict_fn, reset_to
 
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.utils.input_utils import *
-from robosuite.utils.ik_utils import IKSolver
-import robomimic.utils.obs_utils as ObsUtils
+
+from robomimic.envs.env_robosuite import EnvRobosuite
 
 import h5py
 import networkx as nx
@@ -27,7 +21,6 @@ from collections import namedtuple
 ts_tuple = namedtuple("ts_tuple", ["observation", "reward", "done", "info"])
 
 MAX_FR = 25  # max frame rate for running simluation
-
 
 def to_camel_case(snake_str):
     """Convert snake_case string to CamelCase"""
@@ -66,10 +59,12 @@ def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
     return rot_mat
 
 
-class DMG_env_switchable:
-    def __init__(self, task_name, env_configuration = "parallel", robots = ["Panda", "Panda"], \
+
+class DMG_env_switchable(EnvRobosuite):
+    def __init__(self, env_name, 
+                 env_configuration = "single-arm-parallel", robots = ["Panda", "Panda"], \
                  cam_names = ["agentview", "birdview", "frontview"],\
-                  W = 128, H = 128, controller_name = "OSC_POSE", abs_action = False,
+                  W = 84, H = 84, controller_name = "OSC_POSE", abs_action = False,
                   postprocess_visual_obs = True):
         
         self.evaluate_fn = None
@@ -77,100 +72,47 @@ class DMG_env_switchable:
         
         self.max_timesteps = 1000
 
-        self.task_name = task_name
-        env_name = to_camel_case(task_name)
-
-        # robosuite version check
-        self._is_v1 = (suite.__version__.split(".")[0] == "1")
-        if self._is_v1:
-            assert (int(suite.__version__.split(".")[1]) >= 2), "only support robosuite v0.3 and v1.2+"
-        self.postprocess_visual_obs = postprocess_visual_obs
-
         self.options = {}
-        self.options["env_name"] = env_name
+        # self.options["env_name"] = env_name
         self.options["env_configuration"] = env_configuration
         self.options["robots"] = robots
         self.options["camera_names"] = cam_names
         self.options["camera_heights"] = H
         self.options["camera_widths"] = W
-        self.options["has_offscreen_renderer"] = True
-        self.options["use_camera_obs"] = True
-        self.options["camera_depths"] = True
+        # self.options["has_offscreen_renderer"] = True
+        # self.options["use_camera_obs"] = True
+        # self.options["camera_depths"] = True
         self.options["camera_segmentations"] = "instance"
 
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
         self.options["controller_configs"] = default_controller_configs
         self.controller_configs = default_controller_configs
 
-        # initialize the task
-        self.env = suite.make(
-            **self.options,
-            has_renderer=True,
-            ignore_done=True,
-            control_freq=20,
+        super().__init__(
+            env_name = env_name,
+            render = True,
+            render_offscreen = True,
+            use_image_obs = True,
+            use_depth_obs = True,
+            postprocess_visual_obs = postprocess_visual_obs,
+            env_lang = None,
+            **self.options
         )
-        self.reset()
-        self.env.viewer.set_camera(camera_id=0)
+        
+  
 
-    def reset(self, with_planning = False):
+    def reset_ts(self, with_planning = False):
         if with_planning:
             raise NotImplementedError("Planning is not implemented yet")
         else:
-            raw_obs = self.env.reset()
-            self.obs = self.get_observation(raw_obs)
+            self.obs = self.reset()
             init_ts = ts_tuple(self.obs, 0, False, {})
         return init_ts
     
-    def step(self, action):
-        raw_obs, reward, done, info = self.env.step(action)
-        self.obs = self.get_observation(raw_obs)
+    def step_ts(self, action):
+        self.obs, reward, done, info = self.step(action)
         return ts_tuple(self.obs, reward, done, info)
 
-    ## env_robosuite.
-    def get_observation(self, di = None):
-        if ObsUtils.OBS_KEYS_TO_MODALITIES is None:
-            return di
-        if di is None:
-            di = self.env._get_observations(force_update=True) if self._is_v1 else self.env._get_observation()
-        ret = {}
-        for k in di:
-            if (k in ObsUtils.OBS_KEYS_TO_MODALITIES) and ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb"):
-                ret[k] = di[k][::-1]
-                if self.postprocess_visual_obs:
-                    ret[k] = ObsUtils.process_obs(obs=ret[k], obs_key=k)
-            elif (k in ObsUtils.OBS_KEYS_TO_MODALITIES) and ObsUtils.key_is_obs_modality(key=k, obs_modality="depth"):
-                ret[k] = di[k][::-1]
-                if len(ret[k].shape) == 2:
-                    ret[k] = ret[k][..., None] # (H, W, 1)
-                assert len(ret[k].shape) == 3 
-                # scale entries in depth map to correspond to real distance.
-                ret[k] = self.get_real_depth_map(ret[k])
-                if self.postprocess_visual_obs:
-                    ret[k] = ObsUtils.process_obs(obs=ret[k], obs_key=k)
-            elif "object" in k:
-                ret[k] = np.array(di[k])
-
-        if self._is_v1:
-            for robot in self.env.robots:
-                # add all robot-arm-specific observations. Note the (k not in ret) check
-                # ensures that we don't accidentally add robot wrist images a second time
-                pf = robot.robot_model.naming_prefix
-                for k in di:
-                    if k.startswith(pf) and (k not in ret) and (not k.endswith("proprio-state")):
-                        ret[k] = np.array(di[k])
-
-            # add in all frame-centric observations if present
-            if hasattr(self.env, "_frame_centric_observable_names"):
-                for fc_k in self.env._frame_centric_observable_names:
-                    ret[fc_k] = np.array(di[fc_k])
-        else:
-            # minimal proprioception for older versions of robosuite
-            ret["proprio"] = np.array(di["robot-state"])
-            ret["eef_pos"] = np.array(di["eef_pos"])
-            ret["eef_quat"] = np.array(di["eef_quat"])
-            ret["gripper_qpos"] = np.array(di["gripper_qpos"])
-
-        return ret
 
     def init_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
         # config the abs joint position controller 
@@ -423,7 +365,7 @@ class DMG_env_switchable:
 
     def  handle_rewards(self):
         return self.env.reward() >=1
-
+    
     def exit(self):
         self.env.close()
 
@@ -520,7 +462,7 @@ class DMG_env_switchable:
 
                 action[count] = test_value
                 total_action = np.tile(action, n)
-                ts = self.step(total_action)
+                self.env.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -531,7 +473,7 @@ class DMG_env_switchable:
             for i in range(steps_per_rest):
                 start = time.time()
                 total_action = np.tile(neutral, n)
-                ts = self.step(total_action)
+                self.env.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -543,6 +485,6 @@ class DMG_env_switchable:
 
 
 if __name__ == "__main__":
-
-    dmg_wrapper = DMG_env_runner("two_arm_three_piece_assembly", controller_name = "JOINT_POSITION", abs_action = True)
+    env_name = to_camel_case("two_arm_three_piece_assembly")
+    dmg_wrapper = DMG_env_switchable(env_name, controller_name = "JOINT_POSITION", abs_action = True)
     dmg_wrapper.test_controller(controller_name="OSC_POSE", abs_action=False)
