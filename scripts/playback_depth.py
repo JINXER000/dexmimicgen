@@ -37,9 +37,9 @@ Example usage:
     # debug the dataset playback with verbose logging and first frame only
     python script.py --dataset /path/to/dataset.hdf5 --verbose --first
 """
-import sys
-robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
-sys.path.append(robosuite_path)
+# import sys
+# robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
+# sys.path.append(robosuite_path)
 
 import argparse
 import datetime
@@ -170,7 +170,7 @@ def playback_trajectory_with_env(
 
         # video render
         if write_video:
-            frontview_img = obs['frontview_image']
+            frontview_img = obs['frontview_image'][::-1]
             video_writer.append_data(frontview_img)
             # if video_count % video_skip == 0:
             #     video_img = []
@@ -384,7 +384,7 @@ def playback_dataset(args):
     # create environment only if not playing back with observations
     if not args.use_obs:
         cam_names = ["agentview", "birdview", "frontview"]
-        W = H =  512# 128
+        W = H = 168 # 512 # 128 
 
         env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
 
@@ -491,10 +491,12 @@ def playback_dataset(args):
         elif 'assembly' in args.dataset:
             interested_objs = ['base', 'piece_1', 'piece_2']
         elif 'transport' in args.dataset:
-            interested_objs = ['trash', 'payload', 'transport_start_bin', 'transport_start_bin_lid', 'transport_target_bin', 'transport_trash_bin']
+            interested_objs = ['trash', 'payload', 'transport_start_bin', 'bin_lid', 'transport_target_bin', 'transport_trash_bin']
         elif 'threading' in args.dataset:
             interested_objs = ['needle_obj', 'tripod_obj']
+
         pc_fn = get_pcd_dict_fn(cam_names, W, H,  interested_objs, record_ply=True)
+        # pc_fn = None
 
         pc_dict_list, abs_actions = playback_trajectory_with_env(
             env=env,
@@ -602,7 +604,8 @@ def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
 
             # ensure the pcd is not empty
             if len(obj_pcd.points) == 0:
-                raise ValueError(f"Point cloud for {obj_name} is empty")
+                # raise ValueError(f"Point cloud for {obj_name} is empty")
+                continue
 
             if record_ply:
                 o3d.io.write_point_cloud(f"{obj_name}_pcd.ply", obj_pcd)
@@ -677,6 +680,7 @@ if __name__ == "__main__":
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_lift_tray.hdf5",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
         default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_threading.hdf5",
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_transport.hdf5",
     )   
     parser.add_argument(
         "--filter_key",
@@ -689,7 +693,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=1,
+        default=100,
         help="(optional) stop after n trajectories are played",
     )
 

@@ -1,8 +1,7 @@
 import time
 from typing import Dict
 
-
-# from scripts.playback_depth import get_pcd_dict_fn, reset_to
+from scripts.playback_depth import get_pcd_dict_fn, reset_to
 
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
@@ -20,7 +19,6 @@ from collections import namedtuple
 
 ts_tuple = namedtuple("ts_tuple", ["observation", "reward", "done", "info"])
 
-MAX_FR = 25  # max frame rate for running simluation
 
 def to_camel_case(snake_str):
     """Convert snake_case string to CamelCase"""
@@ -35,10 +33,10 @@ def get_sg(hdf5_group, sg_name):
     sg = nx.node_link_graph(json.loads(sg_str))
     return sg
 
-def compose_transformation(xyz, quat):
-    rot_mat = Rotation.from_quat(quat).as_matrix()
-    trans = np.concatenate([np.concatenate([rot_mat, np.array([xyz]).T], axis=1), np.array([[0, 0, 0, 1]])], axis=0)
-    return trans
+# def compose_transformation(xyz, quat):
+#     rot_mat = Rotation.from_quat(quat).as_matrix()
+#     trans = np.concatenate([np.concatenate([rot_mat, np.array([xyz]).T], axis=1), np.array([[0, 0, 0, 1]])], axis=0)
+#     return trans
 
 def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
     # Convert 6D rotation to 3x3 rotation matrix using Gram-Schmidt
@@ -65,13 +63,14 @@ class DMG_env_switchable(EnvRobosuite):
                  env_configuration = "single-arm-parallel", robots = ["Panda", "Panda"], \
                  cam_names = ["agentview", "birdview", "frontview"],\
                   W = 84, H = 84, controller_name = "OSC_POSE", abs_action = False,
-                  postprocess_visual_obs = True):
+                  postprocess_visual_obs = True, max_framerate = 25):
         
+        self.env_name = env_name
         self.evaluate_fn = None
         self.inference_fn = None
         
         self.max_timesteps = 1000
-
+        self.max_framerate = max_framerate
         self.options = {}
         # self.options["env_name"] = env_name
         self.options["env_configuration"] = env_configuration
@@ -99,19 +98,11 @@ class DMG_env_switchable(EnvRobosuite):
             **self.options
         )
         
-  
-
     def reset_ts(self, with_planning = False):
-        if with_planning:
-            raise NotImplementedError("Planning is not implemented yet")
-        else:
-            self.obs = self.reset()
-            init_ts = ts_tuple(self.obs, 0, False, {})
-        return init_ts
+        raise NotImplementedError("Resetting is not implemented yet")
     
     def step_ts(self, action):
-        self.obs, reward, done, info = self.step(action)
-        return ts_tuple(self.obs, reward, done, info)
+        raise NotImplementedError("Stepping is not implemented yet")
 
 
     def init_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
@@ -129,6 +120,7 @@ class DMG_env_switchable(EnvRobosuite):
             default_controller="OSC_POSE"
         )
         self.absolute_osc_pose_controller_config["input_type"] = "absolute"  # use absolute actions
+        self.absolute_osc_pose_controller_config["input_ref_frame"] = "world"  # use world frame as reference
 
         default_controller_configs = self.update_controller_configs(
             controller_name=controller_name, abs_action=abs_action
@@ -204,7 +196,7 @@ class DMG_env_switchable(EnvRobosuite):
         equibot_obs = dict()
 
         ## get pc for each obj, then merge them
-        pc_dict = self.save_mj_obsevation(npz_path=None)
+        pc_dict = self.save_mj_observation(npz_path=None)
         related_objs = self.equi_cfg.data.dataset.related_objs
         all_pc = np.concatenate(
             [pc_dict[obj] for obj in related_objs], axis=0
@@ -277,7 +269,7 @@ class DMG_env_switchable(EnvRobosuite):
             obs_horizon = equi_agent.obs_horizon
 
             equibot_obs = self.organize_equibot_obs(raw_obs)
-            obs_history = [equibot_obs for i in range(obs_horizon)]
+            obs_history = [equibot_obs for i in range(obs_horizon)]  # NOTE: incorrect obs seq
             done = False
             prev_reward = None
             while not done:
@@ -372,38 +364,36 @@ class DMG_env_switchable(EnvRobosuite):
     def replay_tamp_step(self, total_action):
         start = time.time()
 
-        ts = self.step(total_action)
+        ts = self.step_ts(total_action)
         self.env.render()
         # limit frame rate if necessary
         elapsed = time.time() - start
-        diff = 1 / MAX_FR - elapsed
+        diff = 1 / self.max_framerate - elapsed
         if diff > 0:
             time.sleep(diff)
+        return ts
 
+    ## rbt0: left, rbt1: right
     def get_cur_jpose(self):
         cur_obs = self.env._get_observations(force_update = True)
         rbt0_jpose = cur_obs['robot0_joint_pos']
         rbt1_jpose = cur_obs['robot1_joint_pos']
         return rbt0_jpose, rbt1_jpose
     
-    ## TODO: use self.get_observation() to obtain depth
-    def save_mj_obsevation(self, npz_path = None, offset_dict = {}):
+    def save_mj_observation(self, npz_path = None, offset_dict = {}, interested_objs = [],record_ply = False):
 
-        pc_dict = {}
-        if self.task_name == 'two_arm_three_piece_assembly':
-            interested_objs = ['base', 'piece_1', 'piece_2']
-
-        else:
-            raise NotImplementedError("This task is not supported")
-        
+        assert len(interested_objs) > 0, "interested_objs should not be empty"
+        depth_cameras = [cam_name for cam_name in self.options["camera_names"] if "in_hand" not in cam_name]
+        pc_dict = {}        
         pc_fn = get_pcd_dict_fn(
-            cam_names=self.options["camera_names"],
+            cam_names=depth_cameras,
             W=self.options["camera_widths"],
             H= self.options["camera_heights"],
             interested_objs=interested_objs,
-            record_ply = False
+            record_ply = record_ply
         )
-        o3d_pc_dict = pc_fn(self.env, self.obs)
+        ## NOTE: always use raw_obs, do not use obs from self.get_observation()
+        o3d_pc_dict = pc_fn(self.env, self.raw_obs)
 
         for obj_name, pcd in o3d_pc_dict.items():
             pc = np.asarray(pcd.points)
@@ -461,13 +451,15 @@ class DMG_env_switchable(EnvRobosuite):
                 start = time.time()
 
                 action[count] = test_value
-                total_action = np.tile(action, n)
+                # total_action = np.tile(action, n)
+                action[-1] = 1 # test gripper
+                total_action = np.concatenate((action, np.zeros(action.shape)), axis=-1)
                 self.env.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
                 elapsed = time.time() - start
-                diff = 1 / MAX_FR - elapsed
+                diff = 1 / self.max_framerate - elapsed
                 if diff > 0:
                     time.sleep(diff)
             for i in range(steps_per_rest):
@@ -478,7 +470,7 @@ class DMG_env_switchable(EnvRobosuite):
 
                 # limit frame rate if necessary
                 elapsed = time.time() - start
-                diff = 1 / MAX_FR - elapsed
+                diff = 1 / self.max_framerate - elapsed
                 if diff > 0:
                     time.sleep(diff)
             count += 1

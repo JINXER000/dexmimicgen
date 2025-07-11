@@ -472,7 +472,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=None,
+        default=1,
         help="(optional) stop after n trajectories are played",
     )
 
@@ -486,14 +486,14 @@ if __name__ == "__main__":
     # Playback stored dataset actions open-loop instead of loading from simulation states.
     parser.add_argument(
         "--use-actions",
-        action="store_true",
+        action="store_false",
         help="use open-loop action playback instead of loading sim states",
     )
 
     # Whether to render playback to screen
     parser.add_argument(
         "--render",
-        action="store_true",
+        action="store_false",
         help="on-screen rendering",
     )
 
