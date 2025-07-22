@@ -491,7 +491,7 @@ def playback_dataset(args):
         elif 'assembly' in args.dataset:
             interested_objs = ['base', 'piece_1', 'piece_2']
         elif 'transport' in args.dataset:
-            interested_objs = ['trash', 'payload', 'transport_start_bin', 'bin_lid', 'transport_target_bin', 'transport_trash_bin']
+            interested_objs = ['trash', 'payload', 'transport_start_bin', 'transport_start_bin_lid', 'transport_target_bin', 'transport_trash_bin']
         elif 'threading' in args.dataset:
             interested_objs = ['needle_obj', 'tripod_obj']
 
@@ -679,8 +679,8 @@ if __name__ == "__main__":
         help="path to hdf5 dataset",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_lift_tray.hdf5",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
-        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_threading.hdf5",
-        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_transport.hdf5",
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_threading.hdf5",
+        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_transport.hdf5",
     )   
     parser.add_argument(
         "--filter_key",
@@ -693,7 +693,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=100,
+        default=5,
         help="(optional) stop after n trajectories are played",
     )
 

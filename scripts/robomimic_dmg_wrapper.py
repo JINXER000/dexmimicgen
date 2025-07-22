@@ -92,9 +92,9 @@ class DMG_env_switchable(EnvRobosuite):
             render = True,
             render_offscreen = True,
             use_image_obs = True,
-            use_depth_obs = True,
+            # use_depth_obs = True,
             postprocess_visual_obs = postprocess_visual_obs,
-            env_lang = None,
+            # env_lang = None,
             **self.options
         )
         
@@ -454,7 +454,8 @@ class DMG_env_switchable(EnvRobosuite):
                 # total_action = np.tile(action, n)
                 action[-1] = 1 # test gripper
                 total_action = np.concatenate((action, np.zeros(action.shape)), axis=-1)
-                self.env.step(total_action)
+                raw_obs = self.step(total_action)
+                # self.env.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
