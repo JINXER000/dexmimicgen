@@ -1,7 +1,7 @@
 import time
 from typing import Dict
 
-from scripts.playback_depth import get_pcd_dict_fn, reset_to
+from scripts.playback_depth import get_pcd_dict_fn, reset_to, D_CAM
 
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
@@ -38,50 +38,50 @@ def get_sg(hdf5_group, sg_name):
 #     trans = np.concatenate([np.concatenate([rot_mat, np.array([xyz]).T], axis=1), np.array([[0, 0, 0, 1]])], axis=0)
 #     return trans
 
-def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
-    # Convert 6D rotation to 3x3 rotation matrix using Gram-Schmidt
-    a1, a2 = rot_6d[..., :3], rot_6d[..., 3:]
+# def rotation_6d_to_matrix(rot_6d:np.ndarray) -> np.ndarray:
+#     # Convert 6D rotation to 3x3 rotation matrix using Gram-Schmidt
+#     a1, a2 = rot_6d[..., :3], rot_6d[..., 3:]
     
-    # Normalize first vector
-    b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
+#     # Normalize first vector
+#     b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
     
-    # Gram-Schmidt process for second vector
-    b2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
-    b2 = b2 / np.linalg.norm(b2, axis=-1, keepdims=True)
+#     # Gram-Schmidt process for second vector
+#     b2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
+#     b2 = b2 / np.linalg.norm(b2, axis=-1, keepdims=True)
     
-    # Cross product for third vector
-    b3 = np.cross(b1, b2)
+#     # Cross product for third vector
+#     b3 = np.cross(b1, b2)
     
-    # Stack and transpose to get rotation matrix
-    rot_mat = np.stack((b1, b2, b3), axis=-2).transpose(0, 2, 1)
-    return rot_mat
+#     # Stack and transpose to get rotation matrix
+#     rot_mat = np.stack((b1, b2, b3), axis=-2).transpose(0, 2, 1)
+#     return rot_mat
 
 
 
 class DMG_env_switchable(EnvRobosuite):
     def __init__(self, env_name, 
-                 env_configuration = "single-arm-parallel", robots = ["Panda", "Panda"], \
-                 cam_names = ["agentview", "birdview", "frontview"],\
-                  W = 84, H = 84, controller_name = "OSC_POSE", abs_action = False,
-                  postprocess_visual_obs = True, max_framerate = 25):
+                  env_options = None, controller_name = "OSC_POSE", abs_action = False,
+                  postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 700):
         
         self.env_name = env_name
         self.evaluate_fn = None
         self.inference_fn = None
         
-        self.max_timesteps = 1000
+        self.max_timesteps = max_timesteps
         self.max_framerate = max_framerate
-        self.options = {}
-        # self.options["env_name"] = env_name
-        self.options["env_configuration"] = env_configuration
-        self.options["robots"] = robots
-        self.options["camera_names"] = cam_names
-        self.options["camera_heights"] = H
-        self.options["camera_widths"] = W
-        # self.options["has_offscreen_renderer"] = True
-        # self.options["use_camera_obs"] = True
-        # self.options["camera_depths"] = True
-        self.options["camera_segmentations"] = "instance"
+        assert env_options is not None, "env_options should not be None, please provide the env options"
+        self.options = env_options
+        # self.options = {}
+        # # self.options["env_name"] = env_name
+        # self.options["env_configuration"] = env_configuration
+        # self.options["robots"] = robots
+        # self.options["camera_names"] = cam_names
+        # self.options["camera_heights"] = H
+        # self.options["camera_widths"] = W
+        # # self.options["has_offscreen_renderer"] = True
+        # # self.options["use_camera_obs"] = True
+        # # self.options["camera_depths"] = True
+        # self.options["camera_segmentations"] = "instance"
 
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
         self.options["controller_configs"] = default_controller_configs
@@ -192,139 +192,139 @@ class DMG_env_switchable(EnvRobosuite):
         )
 
 
-    def organize_equibot_obs(self, obs):
-        equibot_obs = dict()
+    # def organize_equibot_obs(self, obs):
+    #     equibot_obs = dict()
 
-        ## get pc for each obj, then merge them
-        pc_dict = self.save_mj_observation(npz_path=None)
-        related_objs = self.equi_cfg.data.dataset.related_objs
-        all_pc = np.concatenate(
-            [pc_dict[obj] for obj in related_objs], axis=0
-        )
+    #     ## get pc for each obj, then merge them
+    #     pc_dict = self.save_mj_observation(npz_path=None)
+    #     related_objs = self.equi_cfg.data.dataset.related_objs
+    #     all_pc = np.concatenate(
+    #         [pc_dict[obj] for obj in related_objs], axis=0
+    #     )
 
-        def down_sample_pc(pc):
-            num_points = self.equi_cfg.data.dataset.num_points
-            if pc.shape[0] <= num_points:
-                return pc
-            choice = np.random.choice(pc.shape[0], num_points, replace=False)
-            return pc[choice]
+    #     def down_sample_pc(pc):
+    #         num_points = self.equi_cfg.data.dataset.num_points
+    #         if pc.shape[0] <= num_points:
+    #             return pc
+    #         choice = np.random.choice(pc.shape[0], num_points, replace=False)
+    #         return pc[choice]
 
-        equibot_obs['pc'] = down_sample_pc(all_pc)
+    #     equibot_obs['pc'] = down_sample_pc(all_pc)
 
-        ## get eef_pos
-        eef_states = {}
-        gripper_states = {}
-        related_robots = self.equi_cfg.data.dataset.related_robots
-        num_eef = len(related_robots)
-        for robot_name in related_robots:
-            biop_eef_pose = obs[f"{robot_name}_eef_pos"]
-            biop_eef_quat = obs[f"{robot_name}_eef_quat"]
-            eef_state = compose_transformation(biop_eef_pose, biop_eef_quat)
-            eef_states[robot_name] = eef_state.reshape(1, 4, 4)
+    #     ## get eef_pos
+    #     eef_states = {}
+    #     gripper_states = {}
+    #     related_robots = self.equi_cfg.data.dataset.related_robots
+    #     num_eef = len(related_robots)
+    #     for robot_name in related_robots:
+    #         biop_eef_pose = obs[f"{robot_name}_eef_pos"]
+    #         biop_eef_quat = obs[f"{robot_name}_eef_quat"]
+    #         eef_state = compose_transformation(biop_eef_pose, biop_eef_quat)
+    #         eef_states[robot_name] = eef_state.reshape(1, 4, 4)
 
-            gripper_state2finger = obs[f"{robot_name}_gripper_qpos"]
-            gripper_states[robot_name] = gripper_state2finger[0]
+    #         gripper_state2finger = obs[f"{robot_name}_gripper_qpos"]
+    #         gripper_states[robot_name] = gripper_state2finger[0]
 
 
-        eef_state_trans = np.concatenate([eef_states[robot_name] for robot_name in related_robots], axis=0)
-        gripper_vals = np.array([gripper_states[robot_name] for robot_name in related_robots]).reshape(-1, 1)
+    #     eef_state_trans = np.concatenate([eef_states[robot_name] for robot_name in related_robots], axis=0)
+    #     gripper_vals = np.array([gripper_states[robot_name] for robot_name in related_robots]).reshape(-1, 1)
 
-        eef_state_3vec = eef_state_trans[:, :3, [3, 0, 1]].transpose(0, 2, 1)
-        eef_state_9d = eef_state_3vec.reshape(num_eef, 9)
-        gravity_vec = np.array([0, 0, -1])
-        gravity_expanded = np.tile(gravity_vec, (num_eef, 1))
-        eef_state_13d = np.concatenate([eef_state_9d, gravity_expanded, gripper_vals], axis=-1)
+    #     eef_state_3vec = eef_state_trans[:, :3, [3, 0, 1]].transpose(0, 2, 1)
+    #     eef_state_9d = eef_state_3vec.reshape(num_eef, 9)
+    #     gravity_vec = np.array([0, 0, -1])
+    #     gravity_expanded = np.tile(gravity_vec, (num_eef, 1))
+    #     eef_state_13d = np.concatenate([eef_state_9d, gravity_expanded, gripper_vals], axis=-1)
 
-        equibot_obs['eef_pos'] = eef_state_13d
-        return equibot_obs
+    #     equibot_obs['eef_pos'] = eef_state_13d
+    #     return equibot_obs
     
-    def organize_equipolicy_action(self, action):
-        related_robots = self.equi_cfg.data.dataset.related_robots
-        num_eef = len(related_robots)
+    # def organize_equipolicy_action(self, action):
+    #     related_robots = self.equi_cfg.data.dataset.related_robots
+    #     num_eef = len(related_robots)
 
-        action_7d = action.reshape(num_eef, 7)  # gripper, relpos, relrot
-        eef_gripper = action_7d[:, 0].reshape(-1, 1)  # gripper value
-        eef_relpos = action_7d[:, 1:4]  # 3d position relative to the base
-        eef_relaxis = action_7d[:, 4:7]  # 3d rotation axis relative to the base
-        # TODO: check the code in robomimic inference
-        # eef_relrpy[0] = Rotation.from_rotvec(eef_relaxis).as_euler('xyz') # convert to euler angles
+    #     action_7d = action.reshape(num_eef, 7)  # gripper, relpos, relrot
+    #     eef_gripper = action_7d[:, 0].reshape(-1, 1)  # gripper value
+    #     eef_relpos = action_7d[:, 1:4]  # 3d position relative to the base
+    #     eef_relaxis = action_7d[:, 4:7]  # 3d rotation axis relative to the base
+    #     # TODO: check the code in robomimic inference
+    #     # eef_relrpy[0] = Rotation.from_rotvec(eef_relaxis).as_euler('xyz') # convert to euler angles
 
-        action_7d_dmg = np.concatenate((eef_relpos, np.zeros(eef_relaxis.shape), eef_gripper), axis=-1)  
-        action_out = action_7d_dmg.reshape(-1)  # 7 * num_eef
+    #     action_7d_dmg = np.concatenate((eef_relpos, np.zeros(eef_relaxis.shape), eef_gripper), axis=-1)  
+    #     action_out = action_7d_dmg.reshape(-1)  # 7 * num_eef
 
-        # eef_pos = action_10d[:, 1:4]
-        # eef_rot6d = action_10d[:, 4:10]
-        # eef_rotmat = rotation_6d_to_matrix(eef_rot6d)
-        return action_out
+    #     # eef_pos = action_10d[:, 1:4]
+    #     # eef_rot6d = action_10d[:, 4:10]
+    #     # eef_rotmat = rotation_6d_to_matrix(eef_rot6d)
+    #     return action_out
         
 
-    def get_equipolicy_agent(self, equi_agent, equi_cfg):
-        assert self.evaluate_fn is None, "An agent is already loaded. Please call exit() before loading a new agent."
-        self.equi_cfg = equi_cfg
+    # def get_equipolicy_agent(self, equi_agent, equi_cfg):
+    #     assert self.evaluate_fn is None, "An agent is already loaded. Please call exit() before loading a new agent."
+    #     self.equi_cfg = equi_cfg
 
-        ## part of eval.py in equibot
-        ## TODO: using DP execution logic
-        def evaluate_fn(raw_obs: Dict[str, np.ndarray], **kwargs):
-            ac_horizon = equi_agent.ac_horizon
-            obs_horizon = equi_agent.obs_horizon
+    #     ## part of eval.py in equibot
+    #     ## TODO: using DP execution logic
+    #     def evaluate_fn(raw_obs: Dict[str, np.ndarray], **kwargs):
+    #         ac_horizon = equi_agent.ac_horizon
+    #         obs_horizon = equi_agent.obs_horizon
 
-            equibot_obs = self.organize_equibot_obs(raw_obs)
-            obs_history = [equibot_obs for i in range(obs_horizon)]  # NOTE: incorrect obs seq
-            done = False
-            prev_reward = None
-            while not done:
-                # Use the agent to get the action
-                agent_obs = dict()
-                for k in equibot_obs.keys():
-                    if k == "pc":
-                        # point clouds can have different number of points
-                        # so do not stack them
-                        agent_obs[k] = [o[k] for o in obs_history[-obs_horizon:]]
-                    else:
-                        agent_obs[k] = np.stack(
-                            [o[k] for o in obs_history[-obs_horizon:]]
-                        )
-                ## ac is the unnormalized action, while ac_dict is the raw action
-                ac, ac_dict = equi_agent.eval_with_rotation(agent_obs, **kwargs)
+    #         equibot_obs = self.organize_equibot_obs(raw_obs)
+    #         obs_history = [equibot_obs for i in range(obs_horizon)]  # NOTE: incorrect obs seq
+    #         done = False
+    #         prev_reward = None
+    #         while not done:
+    #             # Use the agent to get the action
+    #             agent_obs = dict()
+    #             for k in equibot_obs.keys():
+    #                 if k == "pc":
+    #                     # point clouds can have different number of points
+    #                     # so do not stack them
+    #                     agent_obs[k] = [o[k] for o in obs_history[-obs_horizon:]]
+    #                 else:
+    #                     agent_obs[k] = np.stack(
+    #                         [o[k] for o in obs_history[-obs_horizon:]]
+    #                     )
+    #             ## ac is the unnormalized action, while ac_dict is the raw action
+    #             ac, ac_dict = equi_agent.eval_with_rotation(agent_obs, **kwargs)
 
-                # take actions
-                for ac_ix in range(ac_horizon):
+    #             # take actions
+    #             for ac_ix in range(ac_horizon):
 
-                    agent_ac = ac[ac_ix] if len(ac.shape) > 1 else ac # 20
+    #                 agent_ac = ac[ac_ix] if len(ac.shape) > 1 else ac # 20
 
-                    total_action = self.organize_equipolicy_action(agent_ac)
-                    ts = self.step(total_action)
-                    raw_obs = ts.observation
-                    curr_reward = ts.reward
-                    done = ts.done
+    #                 total_action = self.organize_equipolicy_action(agent_ac)
+    #                 ts = self.step(total_action)
+    #                 raw_obs = ts.observation
+    #                 curr_reward = ts.reward
+    #                 done = ts.done
 
-                    self.env.render()
+    #                 self.env.render()
 
-                    equibot_obs = self.organize_equibot_obs(raw_obs)
-                    obs_history.append(equibot_obs)
-                    # if len(obs) > obs_horizon:
-                    #     obs_history = obs_history[-obs_horizon:]
+    #                 equibot_obs = self.organize_equibot_obs(raw_obs)
+    #                 obs_history.append(equibot_obs)
+    #                 # if len(obs) > obs_horizon:
+    #                 #     obs_history = obs_history[-obs_horizon:]
 
-                    if prev_reward is None or curr_reward > prev_reward:
-                        prev_reward = curr_reward
-                    if (
-                        ac_dict is None
-                        or done
-                    ):
-                        break
-            metrics = {}
-            return metrics
+    #                 if prev_reward is None or curr_reward > prev_reward:
+    #                     prev_reward = curr_reward
+    #                 if (
+    #                     ac_dict is None
+    #                     or done
+    #                 ):
+    #                     break
+    #         metrics = {}
+    #         return metrics
         
-        def inference_once_fn(obs: Dict[str, np.ndarray], **kwargs):
-            # Use the agent to get the action
-            action, _ = equi_agent.inference(obs, **kwargs)
-            return action
+    #     def inference_once_fn(obs: Dict[str, np.ndarray], **kwargs):
+    #         # Use the agent to get the action
+    #         action, _ = equi_agent.inference(obs, **kwargs)
+    #         return action
         
-        self.evaluate_fn = evaluate_fn
-        self.inference_fn = inference_once_fn
+    #     self.evaluate_fn = evaluate_fn
+    #     self.inference_fn = inference_once_fn
 
-    def get_dppolicy_agent(self, ckpt_path: str):
-        assert self.evaluate_fn is None, "An agent is already loaded. Please call exit() before loading a new agent."
+    # def get_dppolicy_agent(self, ckpt_path: str):
+    #     assert self.evaluate_fn is None, "An agent is already loaded. Please call exit() before loading a new agent."
 
 
     def inference(self):
@@ -373,20 +373,42 @@ class DMG_env_switchable(EnvRobosuite):
             time.sleep(diff)
         return ts
 
-    ## rbt0: left, rbt1: right
-    def get_cur_jpose(self):
+    def get_cur_eef_xyz_robosuite(self):
         cur_obs = self.env._get_observations(force_update = True)
-        rbt0_jpose = cur_obs['robot0_joint_pos']
-        rbt1_jpose = cur_obs['robot1_joint_pos']
-        return rbt0_jpose, rbt1_jpose
+        return {
+            "left_arm": cur_obs["robot0_eef_pos"].copy(),
+            "right_arm": cur_obs["robot1_eef_pos"].copy(),
+        }
+    
+    def get_cur_jpose_robosuite(self):
+        cur_obs = self.env._get_observations(force_update = True)
+        robot_jposes = {}
+        
+        side_mapping = {'robot0': 'left', 'robot1': 'right'}
+        for robot in self.env.robots:
+            robot_nick_name = f'robot{robot.idn}'
+            jpose = cur_obs[f"{robot_nick_name}_joint_pos"]
+            side = side_mapping[robot_nick_name]
+            robot_jposes[f'{side}_arm'] = list(jpose)
+
+            gripper_left_finger = cur_obs[f"{robot_nick_name}_gripper_qpos"][0]
+            ## for franka, not for aloha
+            gripper_qpos =  np.array([gripper_left_finger, gripper_left_finger])
+            robot_jposes[f'{side}_gripper'] = list(gripper_qpos)
+
+            robot_jposes[f'{side}_robot'] = list(np.concatenate((jpose, gripper_qpos), axis=0))
+
+
+        return robot_jposes
     
     def save_mj_observation(self, npz_path = None, offset_dict = {}, interested_objs = [],record_ply = False):
 
         assert len(interested_objs) > 0, "interested_objs should not be empty"
-        depth_cameras = [cam_name for cam_name in self.options["camera_names"] if "in_hand" not in cam_name]
+        # depth_cameras = [cam_name for cam_name in self.options["camera_names"] if "in_hand" not in cam_name]
+        # depth_cameras = ["agentview", "birdview", "frontview"]
         pc_dict = {}        
         pc_fn = get_pcd_dict_fn(
-            cam_names=depth_cameras,
+            cam_names=D_CAM,
             W=self.options["camera_widths"],
             H= self.options["camera_heights"],
             interested_objs=interested_objs,
@@ -418,7 +440,7 @@ class DMG_env_switchable(EnvRobosuite):
             "OSC_POSE": [6, 6, 0.1],
             "OSC_POSITION": [3, 3, 0.1],
             "IK_POSE": [6, 6, 0.01],
-            "JOINT_POSITION": [joint_dim, joint_dim, 0.5],
+            "JOINT_POSITION": [joint_dim, joint_dim, 1],
             "JOINT_VELOCITY": [joint_dim, joint_dim, -0.1],
             "JOINT_TORQUE": [joint_dim, joint_dim, 0.25],
         }
@@ -454,8 +476,8 @@ class DMG_env_switchable(EnvRobosuite):
                 # total_action = np.tile(action, n)
                 action[-1] = 1 # test gripper
                 total_action = np.concatenate((action, np.zeros(action.shape)), axis=-1)
-                raw_obs = self.step(total_action)
-                # self.env.step(total_action)
+                # raw_obs = self.step(total_action)
+                self.env.step(total_action)
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -479,5 +501,5 @@ class DMG_env_switchable(EnvRobosuite):
 
 if __name__ == "__main__":
     env_name = to_camel_case("two_arm_three_piece_assembly")
-    dmg_wrapper = DMG_env_switchable(env_name, controller_name = "JOINT_POSITION", abs_action = True)
-    dmg_wrapper.test_controller(controller_name="OSC_POSE", abs_action=False)
+    dmg_wrapper = DMG_env_switchable(env_name, controller_name="OSC_POSE", abs_action=False)
+    dmg_wrapper.test_controller(controller_name = "JOINT_POSITION", abs_action = True)

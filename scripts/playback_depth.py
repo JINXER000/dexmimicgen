@@ -59,7 +59,7 @@ from scipy.spatial.transform import Rotation
 # IMPORTANT: you need to import the package to register the environments
 import dexmimicgen
 
-
+D_CAM = ['agentview', 'birdview', 'frontview'] #, 'sideview', 'robot0_eye_in_hand', 'robot1_eye_in_hand']
 def playback_trajectory_with_env(
     env,
     initial_state,
@@ -383,8 +383,7 @@ def playback_dataset(args):
 
     # create environment only if not playing back with observations
     if not args.use_obs:
-        cam_names = ["agentview", "birdview", "frontview"]
-        W = H = 168 # 512 # 128 
+        W = H = 128#  512 # 128  168
 
         env_meta = get_env_metadata_from_dataset(dataset_path=args.dataset)
 
@@ -396,7 +395,7 @@ def playback_dataset(args):
         env_kwargs["use_camera_obs"] = True
         env_kwargs["camera_depths"] = True
         env_kwargs["camera_segmentations"] = "instance"
-        env_kwargs["camera_names"] = cam_names
+        env_kwargs["camera_names"] = D_CAM
         env_kwargs["camera_heights"] = H
         env_kwargs["camera_widths"] = W
         env_kwargs["controller_configs"] = env_meta["env_kwargs"]['controller_configs']
@@ -436,14 +435,16 @@ def playback_dataset(args):
     inds = np.argsort([int(elem[5:]) for elem in demos])
     demos = [demos[i] for i in inds]
 
-    # randomize the playback
-    if args.n is not None:
-        # random.shuffle(demos)
-        demos = demos[: args.n]
+    # # randomize the playback
+    # if args.n is not None:
+    #     # random.shuffle(demos)
+    #     demos = demos[: args.n]
 
+    # for ind in range(len(demos)):
 
+    # below for debug
+    for ind in [203]:
 
-    for ind in range(len(demos)):
         ep = demos[ind]
         print(colored("\nPlaying back episode: {}".format(ep), "yellow"))
 
@@ -494,8 +495,10 @@ def playback_dataset(args):
             interested_objs = ['trash', 'payload', 'transport_start_bin', 'transport_start_bin_lid', 'transport_target_bin', 'transport_trash_bin']
         elif 'threading' in args.dataset:
             interested_objs = ['needle_obj', 'tripod_obj']
+        elif 'cleanup' in args.dataset:
+            interested_objs = ['lid_obj']
 
-        pc_fn = get_pcd_dict_fn(cam_names, W, H,  interested_objs, record_ply=True)
+        pc_fn = get_pcd_dict_fn(D_CAM, W, H,  interested_objs, record_ply=True)
         # pc_fn = None
 
         pc_dict_list, abs_actions = playback_trajectory_with_env(
@@ -677,10 +680,13 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         help="path to hdf5 dataset",
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_box_cleanup.hdf5",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_lift_tray.hdf5",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_three_piece_assembly.hdf5",
         # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_threading.hdf5",
-        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_transport.hdf5",
+        # default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_transport.hdf5",
+        default="/home/user/yzchen_ws/imitation_learning/dexmimicgen/datasets/generated/two_arm_drawer_cleanup.hdf5",
+
     )   
     parser.add_argument(
         "--filter_key",
@@ -693,7 +699,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n",
         type=int,
-        default=5,
+        default=1,
         help="(optional) stop after n trajectories are played",
     )
 
