@@ -37,15 +37,9 @@ Example usage:
     # debug the dataset playback with verbose logging and first frame only
     python script.py --dataset /path/to/dataset.hdf5 --verbose --first
 """
-# import sys
-# robosuite_path = "/home/user/yzchen_ws/imitation_learning/robosuite/"
-# sys.path.append(robosuite_path)
-
 import argparse
-import datetime
 import json
 import os
-import random
 import time
 
 import h5py
@@ -270,26 +264,6 @@ def get_env_metadata_from_dataset(dataset_path, ds_format="robomimic"):
         raise ValueError
     f.close()
     return env_meta
-
-
-class ObservationKeyToModalityDict(dict):
-    """
-    Custom dictionary class with the sole additional purpose of automatically registering new "keys" at runtime
-    without breaking. This is mainly for backwards compatibility, where certain keys such as "latent", "actions", etc.
-    are used automatically by certain models (e.g.: VAEs) but were never specified by the user externally in their
-    config. Thus, this dictionary will automatically handle those keys by implicitly associating them with the low_dim
-    modality.
-    """
-
-    def __getitem__(self, item):
-        # If a key doesn't already exist, warn the user and add default mapping
-        if item not in self.keys():
-            print(
-                f"ObservationKeyToModalityDict: {item} not found,"
-                f" adding {item} to mapping with assumed low_dim modality!"
-            )
-            self.__setitem__(item, "low_dim")
-        return super(ObservationKeyToModalityDict, self).__getitem__(item)
 
 
 def reset_to(env, state,should_ret=False):
@@ -601,7 +575,7 @@ def get_pcd_dict_fn(cam_names, W, H, interested_objs, record_ply=False):
             obj_pcd = o3d.geometry.PointCloud()
             for cam in cam_names:
                 pcd = get_individual_pcd(cam, obs, W, H, \
-                    seg_id=name2id[obj_name],  visualize=False, env=env, filter = True)
+                    seg_id=name2id[obj_name], env=env, filter = True)
                 obj_pcd += pcd
             pc_dict[obj_name] = obj_pcd
 

@@ -14,10 +14,6 @@ import networkx as nx
 import os
 import json
 import numpy as np
-from scipy.spatial.transform import Rotation
-from collections import namedtuple
-
-ts_tuple = namedtuple("ts_tuple", ["observation", "reward", "done", "info"])
 
 
 def to_camel_case(snake_str):
@@ -71,17 +67,6 @@ class DMG_env_switchable(EnvRobosuite):
         self.max_framerate = max_framerate
         assert env_options is not None, "env_options should not be None, please provide the env options"
         self.options = env_options
-        # self.options = {}
-        # # self.options["env_name"] = env_name
-        # self.options["env_configuration"] = env_configuration
-        # self.options["robots"] = robots
-        # self.options["camera_names"] = cam_names
-        # self.options["camera_heights"] = H
-        # self.options["camera_widths"] = W
-        # # self.options["has_offscreen_renderer"] = True
-        # # self.options["use_camera_obs"] = True
-        # # self.options["camera_depths"] = True
-        # self.options["camera_segmentations"] = "instance"
 
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
         self.options["controller_configs"] = default_controller_configs
@@ -166,27 +151,9 @@ class DMG_env_switchable(EnvRobosuite):
         self.controller_configs = self.update_controller_configs(
             controller_name=controller_name, abs_action=abs_action
         )
-        ## do partial reset following _reset_internal()
-        # self.env._action_dim = 0
-        for robot in self.env.robots:
-            # Get the switchable controller instance
-            controller = robot.composite_controller
-            
-            # Create a unique name for this configuration
-            config_name = f"{controller_name}_{'abs' if abs_action else 'delta'}"
-            
-            # Add or update the configuration
-            controller.add_configuration(
-                name=config_name,
-                part_controller_config=self.controller_configs["body_parts"],
-                composite_controller_specific_config=self.controller_configs
-            )
-            
-            # Switch to the new configuration
-            controller.switch_configuration(config_name)
-        
+        # reset_controller() rebuilds each robot's composite controller from the new
+        # configs and updates env._action_dim. This is the single switch path.
         self.env.reset_controller(self.controller_configs)
-        # Log the change
         print(
             f"Switched to {controller_name} controller with {'absolute' if abs_action else 'delta'} actions"
         )
