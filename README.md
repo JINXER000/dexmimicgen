@@ -41,7 +41,7 @@ registered automatically on import). All upstream tasks remain available.
 
 ### Install
 ```bash
-git clone https://github.com/Dr-LfD/dexmimicgen -b playback_3d "${DEXMIMICGEN_ROOT}"
+git clone https://github.com/JINXER000/dexmimicgen -b playback_3d "${DEXMIMICGEN_ROOT}"
 pip install -e "${DEXMIMICGEN_ROOT}"
 ```
 

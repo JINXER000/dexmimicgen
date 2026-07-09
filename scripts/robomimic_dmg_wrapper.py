@@ -91,8 +91,11 @@ class DMG_env_switchable(EnvRobosuite):
 
 
     def init_controller_configs(self, controller_name="OSC_POSE", abs_action=False):
-        # config the abs joint position controller 
-        controller_json_path = '/home/user/yzchen_ws/imitation_learning/robosuite/robosuite/controllers/config/default/parts/joint_position_absolute.json'
+        # config the abs joint position controller
+        controller_json_path = os.path.join(
+            os.path.dirname(suite.__file__),
+            'controllers', 'config', 'default', 'parts', 'joint_position_absolute.json'
+        )
         self.abs_joint_controller_config = suite.load_part_controller_config(custom_fpath=controller_json_path)
 
         # config the OSC_POSE controller, input_type is delta by default
